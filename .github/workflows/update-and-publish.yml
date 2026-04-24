@@ -1,0 +1,129 @@
+name: Update and publish AUR package
+
+on:
+  push:
+    branches: [master]
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-and-publish:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+
+    env:
+      PKGBASE: pangolin-bin
+
+    steps:
+      - name: Install dependencies
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm base-devel git curl jq openssh rsync pacman-contrib
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Read current version
+        id: current
+        run: |
+          current_pkgver=$(sed -n 's/^pkgver=//p' PKGBUILD)
+          echo "pkgver=${current_pkgver}" >> "$GITHUB_OUTPUT"
+
+      - name: Get latest upstream release
+        id: upstream
+        run: |
+          latest_tag=$(curl -fsSL https://api.github.com/repos/fosrl/cli/releases/latest | jq -r '.tag_name')
+          test -n "$latest_tag" && test "$latest_tag" != "null"
+          latest_version="${latest_tag#v}"
+          echo "tag=${latest_tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${latest_version}" >> "$GITHUB_OUTPUT"
+
+      - name: Check if upstream update is needed
+        id: compare
+        run: |
+          if [ "${{ steps.current.outputs.pkgver }}" = "${{ steps.upstream.outputs.version }}" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update PKGBUILD version
+        if: steps.compare.outputs.changed == 'true'
+        run: |
+          sed -i "s/^pkgver=.*/pkgver=${{ steps.upstream.outputs.version }}/" PKGBUILD
+          sed -i 's/^pkgrel=.*/pkgrel=1/' PKGBUILD
+
+      - name: Refresh checksums and .SRCINFO
+        run: |
+          updpkgsums
+          makepkg --printsrcinfo > .SRCINFO
+
+      - name: Commit and push to GitHub if needed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add PKGBUILD .SRCINFO
+
+          if git diff --cached --quiet; then
+            echo "No GitHub changes to commit."
+          else
+            if [ "${{ steps.compare.outputs.changed }}" = "true" ]; then
+              commit_msg="Update pangolin-bin to ${{ steps.upstream.outputs.version }}"
+            else
+              commit_msg="Refresh .SRCINFO and checksums"
+            fi
+
+            git commit -m "$commit_msg"
+            git push origin HEAD:master
+          fi
+
+      - name: Setup SSH for AUR
+        run: |
+          install -dm700 ~/.ssh
+          printf '%s\n' "${{ secrets.AUR_SSH_PRIVATE_KEY }}" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          ssh-keyscan -H aur.archlinux.org >> ~/.ssh/known_hosts
+
+      - name: Clone AUR repository
+        run: |
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/aur -o IdentitiesOnly=yes" \
+          git clone "ssh://aur@aur.archlinux.org/${PKGBASE}.git" aur-repo
+
+      - name: Sync files to AUR
+        run: |
+          rsync -av --delete \
+            --exclude='.git' \
+            --include='PKGBUILD' \
+            --include='.SRCINFO' \
+            --include='pangolin-bin.install' \
+            --exclude='*' \
+            ./ aur-repo/
+
+      - name: Commit and push to AUR if needed
+        run: |
+          cd aur-repo
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No AUR changes to push."
+            exit 0
+          fi
+
+          if [ "${{ steps.compare.outputs.changed }}" = "true" ]; then
+            commit_msg="Update pangolin-bin to ${{ steps.upstream.outputs.version }}"
+          else
+            commit_msg="Sync package files from GitHub"
+          fi
+
+          git commit -m "$commit_msg"
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/aur -o IdentitiesOnly=yes" git push

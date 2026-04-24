@@ -1,0 +1,10 @@
+pangolin
+pangolin-cli*
+
+pkg/
+src/
+
+*.pkg.tar.zst
+*.pkg.tar.xz
+
+*.log

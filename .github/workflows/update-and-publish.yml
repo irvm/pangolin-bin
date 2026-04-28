@@ -87,11 +87,21 @@ jobs:
         if: steps.compare.outputs.changed == 'true'
         run: |
           set -euo pipefail
-          sudo -u builder env GITHUB_WORKSPACE="$GITHUB_WORKSPACE" bash -lc '
-            set -euo pipefail
-            cd "$GITHUB_WORKSPACE"
-            updpkgsums
-          '
+          cd "$GITHUB_WORKSPACE"
+
+          BASE="https://github.com/fosrl/cli/releases/download/${{ steps.upstream.outputs.tag }}"
+
+          sha_x86_64=$(curl -fsL "${BASE}/pangolin-cli_linux_amd64" | sha256sum | awk '{print $1}')
+          sha_aarch64=$(curl -fsL "${BASE}/pangolin-cli_linux_arm64" | sha256sum | awk '{print $1}')
+          sha_armv7h=$(curl -fsL "${BASE}/pangolin-cli_linux_arm32" | sha256sum | awk '{print $1}')
+          sha_armv6h=$(curl -fsL "${BASE}/pangolin-cli_linux_arm32v6" | sha256sum | awk '{print $1}')
+          sha_riscv64=$(curl -fsL "${BASE}/pangolin-cli_linux_riscv64" | sha256sum | awk '{print $1}')
+
+          sed -i "s/^sha256sums_x86_64=.*/sha256sums_x86_64=('${sha_x86_64}')/" PKGBUILD
+          sed -i "s/^sha256sums_aarch64=.*/sha256sums_aarch64=('${sha_aarch64}')/" PKGBUILD
+          sed -i "s/^sha256sums_armv7h=.*/sha256sums_armv7h=('${sha_armv7h}')/" PKGBUILD
+          sed -i "s/^sha256sums_armv6h=.*/sha256sums_armv6h=('${sha_armv6h}')/" PKGBUILD
+          sed -i "s/^sha256sums_riscv64=.*/sha256sums_riscv64=('${sha_riscv64}')/" PKGBUILD
 
       - name: Generate .SRCINFO
         run: |
@@ -126,17 +136,28 @@ jobs:
       - name: Setup SSH for AUR
         run: |
           set -euo pipefail
-          install -dm700 ~/.ssh
-          printf '%s\n' "${{ secrets.AUR_SSH_PRIVATE_KEY }}" > ~/.ssh/aur
-          chmod 600 ~/.ssh/aur
-          ssh-keyscan -H aur.archlinux.org >> ~/.ssh/known_hosts
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          printf '%s\n' "${{ secrets.AUR_SSH_PRIVATE_KEY }}" > "$HOME/.ssh/aur"
+          chmod 600 "$HOME/.ssh/aur"
+          ssh-keyscan -H aur.archlinux.org >> "$HOME/.ssh/known_hosts" 2>/dev/null
+          chmod 644 "$HOME/.ssh/known_hosts"
+
+      - name: Test SSH connection to AUR
+        run: |
+          set -euo pipefail
+          ssh -i "$HOME/.ssh/aur" \
+              -o IdentitiesOnly=yes \
+              -o StrictHostKeyChecking=yes \
+              -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+              -T aur@aur.archlinux.org || true
 
       - name: Clone AUR repository
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
           rm -rf aur-repo
-          GIT_SSH_COMMAND="ssh -i ~/.ssh/aur -o IdentitiesOnly=yes" \
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/aur -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
           git clone "ssh://aur@aur.archlinux.org/${PKGBASE}.git" aur-repo
 
       - name: Sync files to AUR
@@ -171,4 +192,5 @@ jobs:
           fi
 
           git commit -m "$commit_msg"
-          GIT_SSH_COMMAND="ssh -i ~/.ssh/aur -o IdentitiesOnly=yes" git push
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/aur -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
+          git push

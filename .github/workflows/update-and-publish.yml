@@ -19,6 +19,7 @@ jobs:
 
     env:
       PKGBASE: pangolin-bin
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
     steps:
       - name: Install dependencies
@@ -28,10 +29,15 @@ jobs:
           pacman -S --noconfirm base-devel git curl jq openssh rsync pacman-contrib sudo
 
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: master
           fetch-depth: 0
+
+      - name: Mark workspace as safe git directory
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Create builder user
         run: |
@@ -43,6 +49,7 @@ jobs:
         id: current
         run: |
           set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
           current_pkgver=$(sed -n 's/^pkgver=//p' PKGBUILD)
           echo "pkgver=${current_pkgver}" >> "$GITHUB_OUTPUT"
 
@@ -71,6 +78,7 @@ jobs:
         if: steps.compare.outputs.changed == 'true'
         run: |
           set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
           sed -i "s/^pkgver=.*/pkgver=${{ steps.upstream.outputs.version }}/" PKGBUILD
           sed -i 's/^pkgrel=.*/pkgrel=1/' PKGBUILD
           chown builder:builder PKGBUILD
@@ -98,8 +106,8 @@ jobs:
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add PKGBUILD .SRCINFO
 
           if git diff --cached --quiet; then
@@ -126,12 +134,15 @@ jobs:
       - name: Clone AUR repository
         run: |
           set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rm -rf aur-repo
           GIT_SSH_COMMAND="ssh -i ~/.ssh/aur -o IdentitiesOnly=yes" \
           git clone "ssh://aur@aur.archlinux.org/${PKGBASE}.git" aur-repo
 
       - name: Sync files to AUR
         run: |
           set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
           rsync -av --delete \
             --exclude='.git' \
             --include='PKGBUILD' \
@@ -143,7 +154,7 @@ jobs:
       - name: Commit and push to AUR if needed
         run: |
           set -euo pipefail
-          cd aur-repo
+          cd "$GITHUB_WORKSPACE/aur-repo"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -A

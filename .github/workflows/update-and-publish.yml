@@ -164,6 +164,12 @@ jobs:
           export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/aur -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
           git clone "ssh://aur@aur.archlinux.org/${PKGBASE}.git" aur-repo
 
+      - name: Mark git directories as safe
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/aur-repo"
+
       - name: Sync files to AUR
         run: |
           set -euo pipefail

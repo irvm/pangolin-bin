@@ -12,6 +12,7 @@ permissions:
 
 jobs:
   update-and-publish:
+    if: github.event_name != 'push' || github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     container:
       image: archlinux:latest
@@ -22,8 +23,9 @@ jobs:
     steps:
       - name: Install dependencies
         run: |
+          set -euo pipefail
           pacman -Syu --noconfirm
-          pacman -S --noconfirm base-devel git curl jq openssh rsync pacman-contrib
+          pacman -S --noconfirm base-devel git curl jq openssh rsync pacman-contrib sudo
 
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -31,17 +33,26 @@ jobs:
           ref: master
           fetch-depth: 0
 
+      - name: Create builder user
+        run: |
+          set -euo pipefail
+          useradd -m builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+
       - name: Read current version
         id: current
         run: |
+          set -euo pipefail
           current_pkgver=$(sed -n 's/^pkgver=//p' PKGBUILD)
           echo "pkgver=${current_pkgver}" >> "$GITHUB_OUTPUT"
 
       - name: Get latest upstream release
         id: upstream
         run: |
+          set -euo pipefail
           latest_tag=$(curl -fsSL https://api.github.com/repos/fosrl/cli/releases/latest | jq -r '.tag_name')
-          test -n "$latest_tag" && test "$latest_tag" != "null"
+          test -n "$latest_tag"
+          test "$latest_tag" != "null"
           latest_version="${latest_tag#v}"
           echo "tag=${latest_tag}" >> "$GITHUB_OUTPUT"
           echo "version=${latest_version}" >> "$GITHUB_OUTPUT"
@@ -49,6 +60,7 @@ jobs:
       - name: Check if upstream update is needed
         id: compare
         run: |
+          set -euo pipefail
           if [ "${{ steps.current.outputs.pkgver }}" = "${{ steps.upstream.outputs.version }}" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
@@ -58,16 +70,33 @@ jobs:
       - name: Update PKGBUILD version
         if: steps.compare.outputs.changed == 'true'
         run: |
+          set -euo pipefail
           sed -i "s/^pkgver=.*/pkgver=${{ steps.upstream.outputs.version }}/" PKGBUILD
           sed -i 's/^pkgrel=.*/pkgrel=1/' PKGBUILD
+          chown builder:builder PKGBUILD
 
-      - name: Refresh checksums and .SRCINFO
+      - name: Refresh checksums
+        if: steps.compare.outputs.changed == 'true'
         run: |
-          updpkgsums
-          makepkg --printsrcinfo > .SRCINFO
+          set -euo pipefail
+          sudo -u builder env GITHUB_WORKSPACE="$GITHUB_WORKSPACE" bash -lc '
+            set -euo pipefail
+            cd "$GITHUB_WORKSPACE"
+            updpkgsums
+          '
+
+      - name: Generate .SRCINFO
+        run: |
+          set -euo pipefail
+          sudo -u builder env GITHUB_WORKSPACE="$GITHUB_WORKSPACE" bash -lc '
+            set -euo pipefail
+            cd "$GITHUB_WORKSPACE"
+            makepkg --printsrcinfo > .SRCINFO
+          '
 
       - name: Commit and push to GitHub if needed
         run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add PKGBUILD .SRCINFO
@@ -78,7 +107,7 @@ jobs:
             if [ "${{ steps.compare.outputs.changed }}" = "true" ]; then
               commit_msg="Update pangolin-bin to ${{ steps.upstream.outputs.version }}"
             else
-              commit_msg="Refresh .SRCINFO and checksums"
+              commit_msg="Sync PKGBUILD metadata"
             fi
 
             git commit -m "$commit_msg"
@@ -87,6 +116,7 @@ jobs:
 
       - name: Setup SSH for AUR
         run: |
+          set -euo pipefail
           install -dm700 ~/.ssh
           printf '%s\n' "${{ secrets.AUR_SSH_PRIVATE_KEY }}" > ~/.ssh/aur
           chmod 600 ~/.ssh/aur
@@ -94,11 +124,13 @@ jobs:
 
       - name: Clone AUR repository
         run: |
+          set -euo pipefail
           GIT_SSH_COMMAND="ssh -i ~/.ssh/aur -o IdentitiesOnly=yes" \
           git clone "ssh://aur@aur.archlinux.org/${PKGBASE}.git" aur-repo
 
       - name: Sync files to AUR
         run: |
+          set -euo pipefail
           rsync -av --delete \
             --exclude='.git' \
             --include='PKGBUILD' \
@@ -109,6 +141,7 @@ jobs:
 
       - name: Commit and push to AUR if needed
         run: |
+          set -euo pipefail
           cd aur-repo
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"

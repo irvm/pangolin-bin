@@ -45,13 +45,15 @@ jobs:
           useradd -m builder
           chown -R builder:builder "$GITHUB_WORKSPACE"
 
-      - name: Read current version
+      - name: Read current version and release
         id: current
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
           current_pkgver=$(sed -n 's/^pkgver=//p' PKGBUILD)
+          current_pkgrel=$(sed -n 's/^pkgrel=//p' PKGBUILD)
           echo "pkgver=${current_pkgver}" >> "$GITHUB_OUTPUT"
+          echo "pkgrel=${current_pkgrel}" >> "$GITHUB_OUTPUT"
 
       - name: Get latest upstream release
         id: upstream
@@ -69,13 +71,40 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ steps.current.outputs.pkgver }}" = "${{ steps.upstream.outputs.version }}" ]; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "upstream_changed=false" >> "$GITHUB_OUTPUT"
           else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "upstream_changed=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Update PKGBUILD version
-        if: steps.compare.outputs.changed == 'true'
+      - name: Detect packaging changes in push
+        id: packaging
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+
+          packaging_changed=false
+
+          if [ "${{ github.event_name }}" = "push" ]; then
+            before="${{ github.event.before }}"
+            after="${{ github.sha }}"
+
+            if [ "$before" = "0000000000000000000000000000000000000000" ]; then
+              changed_files=$(git show --pretty="" --name-only "$after" || true)
+            else
+              changed_files=$(git diff --name-only "$before" "$after" || true)
+            fi
+
+            printf '%s\n' "$changed_files"
+
+            if printf '%s\n' "$changed_files" | grep -Eq '^(PKGBUILD|pangolin-bin\.install)$'; then
+              packaging_changed=true
+            fi
+          fi
+
+          echo "packaging_changed=${packaging_changed}" >> "$GITHUB_OUTPUT"
+
+      - name: Update PKGBUILD version for new upstream release
+        if: steps.compare.outputs.upstream_changed == 'true'
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
@@ -83,8 +112,17 @@ jobs:
           sed -i 's/^pkgrel=.*/pkgrel=1/' PKGBUILD
           chown builder:builder PKGBUILD
 
+      - name: Bump pkgrel for manual packaging changes
+        if: steps.compare.outputs.upstream_changed != 'true' && steps.packaging.outputs.packaging_changed == 'true'
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          current_pkgrel=$(sed -n 's/^pkgrel=//p' PKGBUILD)
+          next_pkgrel=$((current_pkgrel + 1))
+          sed -i "s/^pkgrel=.*/pkgrel=${next_pkgrel}/" PKGBUILD
+          chown builder:builder PKGBUILD
+
       - name: Refresh checksums
-        if: steps.compare.outputs.changed == 'true'
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
@@ -117,9 +155,6 @@ jobs:
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
-          pwd
-          ls -la
-          git rev-parse --show-toplevel
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add PKGBUILD .SRCINFO
@@ -127,8 +162,10 @@ jobs:
           if git diff --cached --quiet; then
             echo "No GitHub changes to commit."
           else
-            if [ "${{ steps.compare.outputs.changed }}" = "true" ]; then
+            if [ "${{ steps.compare.outputs.upstream_changed }}" = "true" ]; then
               commit_msg="Update pangolin-bin to ${{ steps.upstream.outputs.version }}"
+            elif [ "${{ steps.packaging.outputs.packaging_changed }}" = "true" ]; then
+              commit_msg="Bump pkgrel for packaging changes"
             else
               commit_msg="Sync PKGBUILD metadata"
             fi
@@ -187,9 +224,6 @@ jobs:
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/aur-repo"
-          pwd
-          ls -la
-          git rev-parse --show-toplevel
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -A
@@ -199,8 +233,10 @@ jobs:
             exit 0
           fi
 
-          if [ "${{ steps.compare.outputs.changed }}" = "true" ]; then
+          if [ "${{ steps.compare.outputs.upstream_changed }}" = "true" ]; then
             commit_msg="Update pangolin-bin to ${{ steps.upstream.outputs.version }}"
+          elif [ "${{ steps.packaging.outputs.packaging_changed }}" = "true" ]; then
+            commit_msg="Bump pkgrel for packaging changes"
           else
             commit_msg="Sync package files from GitHub"
           fi

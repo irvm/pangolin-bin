@@ -1,7 +1,7 @@
 # Maintainer: vbopk9x3 <vbopk9x3@4wrd.cc>
 pkgname=pangolin-bin
 pkgver=0.8.0
-pkgrel=3
+pkgrel=4
 pkgdesc="Pangolin Client - Secure reverse proxy and tunnel (Binary version)"
 arch=('x86_64' 'aarch64' 'armv7h' 'armv6h' 'riscv64')
 url="https://github.com/fosrl/cli"

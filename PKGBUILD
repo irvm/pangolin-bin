@@ -26,5 +26,5 @@ sha256sums_riscv64=('097468d580ee67755e14b8bc2f95a4032f3564e16c3f2e91a653b79d7a2
 
 package() {
     # Install the binary to /usr/bin and set executable permissions
-    install -Dm755 "${srcdir}/pangolin" "${pkgdir}/usr/bin/pangolin"
+    install -Dm755 "${srcdir}/pangolin-${pkgver}" "${pkgdir}/usr/bin/pangolin"
 }
